@@ -1,4 +1,4 @@
-:## Make ane Run the program
+## Make ane Run the program
 
 This program can be used to detect failures of nodes in a distributed system. It also allows to grep on log files from different machines in the system.
 
