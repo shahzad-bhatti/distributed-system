@@ -6,7 +6,10 @@
  */
 
 #include "failure_detector/failure_detector.h"
+#include "sdfs/sdfs.h"
 #include "logger/logger.h"
+#include "sdfs/sdfs.h"
+// #include "push.cpp"
 
 #include <iostream>
 #include <string>
@@ -16,13 +19,13 @@
 using namespace std;
 
 int main(int argc, char *argv[]) {
-    
+
     if (argc <2) {
-        cout << "USAGE: " << argv[0] << " <my VM number> " << endl; 
+        cout << "USAGE: " << argv[0] << " <my VM number> " << endl;
         return 0;
     }
     int number = atoi(argv[1]);
-    
+
     string fileName = "machine.";
     if (number < 10) {
         fileName += "0";
@@ -31,11 +34,12 @@ int main(int argc, char *argv[]) {
         fileName += to_string(number);
     }
     fileName += ".log";
-    failureDetector fd(number, fileName, INFO);
-    
-    thread inputThread(&failureDetector::handleInput, &fd);   
-    thread pThread(&failureDetector::sendPING, &fd);   
-    fd.recvMessages();
-    
+
+    sdfs fs(number, fileName, INFO);
+
+    thread inputThread(&sdfs::handleInput, &fs);
+
+    fs.recvMessages();
+
     return 0;
 }

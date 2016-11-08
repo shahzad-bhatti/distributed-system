@@ -6,8 +6,11 @@
  */
 #include "failure_detector.h"
 #include "../util/util.h"
+#include "../sdfs/sdfs.h"
 
-failureDetector::failureDetector(int number, string logFile, level sLevel)
+const string VMPREFIX = "fa16-cs425-g27-";
+
+failureDetector::failureDetector(int number, string logFile, level sLevel, sdfs* fs)
 : myNumber{number}, log{logFile} {
 
     log.setLevel(sLevel);
@@ -21,6 +24,14 @@ failureDetector::failureDetector(int number, string logFile, level sLevel)
     createSocket();
     fillAddrs();
     list[myBirthTime] = myIP;
+    fileSystem = fs;
+
+    thread sendPingThread(&failureDetector::sendPING, this);
+    sendPingThread.detach();  // let this run on its own
+
+    thread recvMessagesThread(&failureDetector::recvMessages, this);
+    recvMessagesThread.detach();  // let this run on its own
+
 }
 
 void failureDetector::recvMessages() {
@@ -36,7 +47,7 @@ void failureDetector::recvMessages() {
 
 
         if (strncmp(recvBuf, "JOIN", 4) == 0) { // a new node sends JOIN message
-            
+
             offset = 4;
             uint64_t theirBirthTime;
             memcpy(&theirBirthTime, recvBuf+offset, sizeof(theirBirthTime));
@@ -58,14 +69,16 @@ void failureDetector::recvMessages() {
             dataLen = htonl(dataLen);
             memcpy(sendBuf + size, &dataLen, sizeof(dataLen));
             size += sizeof(dataLen);
-            
+
+            fileSystem->newNode(senderNode);    // tell sdfs of new node
+
             uint64_t birthTime;
             uint32_t IP;
             int node;
             strcpy(recvBuf, "NEWN");
             // sending my list in response to join
             for (auto it=list.begin(); it!=list.end(); ++it) {
-                
+
                 if (it->first != myBirthTime && it->first != theirBirthTime) { // communicate new node to other nodes
                     node = getNodeNumber(it->second);
                     sendto(sockFd, recvBuf, numBytes, 0, (struct sockaddr*)&nodeAddrs[node], sizeof(nodeAddrs[node]));
@@ -73,18 +86,18 @@ void failureDetector::recvMessages() {
                 birthTime = htonll(it->first);
                 memcpy(sendBuf+size, &birthTime, sizeof(birthTime));
                 size += sizeof(birthTime);
-                
+
                 IP = htonl(it->second);
                 memcpy(sendBuf+size, &IP, sizeof(IP));
                 size += sizeof(IP);
             }
-        
-            log(INFO) << "Sending my list in response to join request."; 
+
+            log(INFO) << "Sending my list in response to join request.";
             log(DEBUG) << "Bytes sending - " << size;
             sendto(sockFd, sendBuf, size, 0, (struct sockaddr*)&theirAddr, theirAddrLen);
-        
+
         } else if(strncmp(recvBuf, "NEWN", 4) == 0) { // new node gossip about it
-            
+
             offset = 4;
             uint64_t theirBirthTime;
             memcpy(&theirBirthTime, recvBuf+offset, sizeof(theirBirthTime));
@@ -101,6 +114,9 @@ void failureDetector::recvMessages() {
                 log(INFO) << "New node with id " << theirBirthTime << " joined the system.";
                 list[theirBirthTime] = theirIP;  // update list
                 log(INFO) << "Added new node " << theirBirthTime << " to the list.";
+
+                fileSystem->newNode(getNodeNumber(theirIP));    // tell sdfs of new node
+
                 bool sentTo[NODES+1] = {};
                 int node;
                 auto newNode = getNodeNumber(theirIP);
@@ -123,15 +139,15 @@ void failureDetector::recvMessages() {
             offset += sizeof(dataLen);
 
             log(DEBUG) << "Received LIST message has payload " << dataLen;
-            
+
             if ( numBytes - dataLen != sizeof(int) + 4 ) {
                 log(ERROR) << "Payload sent = " << dataLen << " payLoad received = " << numBytes - sizeof(dataLen) + 4;
                 exit(4);
             }
-            
+
             uint64_t birthTime;
             uint32_t IP;
-            
+
             int members = dataLen/(sizeof(birthTime) + sizeof(IP));
             for (int i=0; i<members; ++i) {
                 memcpy(&birthTime, recvBuf+offset, sizeof(birthTime));
@@ -139,19 +155,25 @@ void failureDetector::recvMessages() {
 
                 memcpy(&IP, recvBuf+offset, sizeof(IP));
                 offset += sizeof(IP);
-                list[ntohll(birthTime)] = ntohl(IP);
+                IP = ntohl(IP);
+                list[ntohll(birthTime)] = IP;
+
+                fileSystem->newNode(getNodeNumber(IP));    // tell sdfs of new node
             }
             log(INFO) << "Seccessfully joined the system.";
-        
+
         } else if(strncmp(recvBuf, "LEAV", 4) == 0 || strncmp(recvBuf, "FAIL", 4) == 0 ) { // leave or fail message
             offset = 4;
             uint64_t birthTime;
             memcpy(&birthTime, recvBuf+offset, sizeof(birthTime));
             birthTime = ntohll(birthTime);
-           
+
             auto it = list.find(birthTime);
             if (it != list.end()) {
                 log(INFO) << birthTime << " has " << (strncmp(recvBuf, "LEAV", 4) == 0 ? "left the system." : "failed");
+
+                updateSdfs(getNodeNumber(list[birthTime])); // tell sdfs of node failure
+
                 list.erase(birthTime);
                 log(INFO) << "Removed " << birthTime << " from my list";
                 bool sentTo[NODES+1] = {};
@@ -172,9 +194,9 @@ void failureDetector::recvMessages() {
             size = 4;
             copyMyID(recvBuf, size);
             sendto(sockFd, recvBuf, numBytes, 0, (struct sockaddr*)&theirAddr, theirAddrLen);
-             
+
         } else if(strncmp(recvBuf, "ACKD", 4) == 0) { // Direct ACK to PING
-            
+
             offset = 4;
             uint64_t theirBirthTime;
             memcpy(&theirBirthTime, recvBuf+offset, sizeof(theirBirthTime));
@@ -185,7 +207,7 @@ void failureDetector::recvMessages() {
             memcpy(&theirIP, recvBuf+offset, sizeof(theirIP));
             theirIP = ntohl(theirIP);
             offset += sizeof(theirIP);
-            
+
             int node = getNodeNumber(theirIP);
             ackRecvd[node] = true;
 
@@ -196,21 +218,21 @@ void failureDetector::recvMessages() {
             target = ntohl(target);
             strcpy(recvBuf, "PINI");
             sendto(sockFd, recvBuf, numBytes, 0, (struct sockaddr*)&nodeAddrs[target], sizeof(nodeAddrs[target]));
-            
+
         } else if(strncmp(recvBuf, "PINI", 4) == 0) { // PING indirect
             strcpy(recvBuf, "ACKI");
             sendto(sockFd, recvBuf, numBytes, 0, (struct sockaddr*)&theirAddr, theirAddrLen);
-            
+
         } else if(strncmp(recvBuf, "ACKI", 4) == 0) { // ACK indirect in response to indirect PING
             offset = 4;
             int requestor;
             offset += sizeof(requestor); // need to skip target
             memcpy(&requestor, recvBuf+size, sizeof(requestor));
             requestor = ntohl(requestor);
-            
+
             strcpy(recvBuf, "ACKR");
             sendto(sockFd, recvBuf, numBytes, 0, (struct sockaddr*)&nodeAddrs[requestor], sizeof(nodeAddrs[requestor]));
-            
+
         } else if(strncmp(recvBuf, "ACKR", 4) == 0) { // ACK in response to PING request
             offset = 4;
             int target;
@@ -225,6 +247,17 @@ void failureDetector::recvMessages() {
     }
 }
 
+void failureDetector::updateFileSystem(int node) {
+    fileSystem->nodeFailure(node); // tell sdfs of node failure
+    
+}
+
+void failureDetector::updateSdfs(int node) {
+    thread updateSdfsThread(&failureDetector::updateFileSystem, this, node);
+    updateSdfsThread.detach();  // let this run on its own
+}
+
+
 void failureDetector::sendJOIN(int otherNode) {
     joinReply = false;
     char sendBuf[MAXDATASIZE];
@@ -236,14 +269,14 @@ void failureDetector::sendJOIN(int otherNode) {
 
     struct timespec sleepFor;
     sleepFor.tv_sec = 0;
-    sleepFor.tv_nsec = 500 * 1000 * 1000; // 0.5 sec 
-    log(INFO) << "Asking to join the system";  
+    sleepFor.tv_nsec = 500 * 1000 * 1000; // 0.5 sec
+    log(INFO) << "Asking to join the system";
     while(1) {
         sendto(sockFd, sendBuf, size, 0, (struct sockaddr*)&nodeAddrs[otherNode], sizeof(nodeAddrs[otherNode]));
         log(DEBUG2) << "JOIN message sent";
-        
+
         nanosleep(&sleepFor, 0);
-        
+
         if (joinReply) {
             break;
         }
@@ -258,7 +291,7 @@ void failureDetector::handleInput() {
             int otherNode;
             cin >> otherNode;
             sendJOIN(otherNode);
-        
+
         } else if (input.compare("id") == 0) {
             cout << myBirthTime << endl;
 
@@ -270,22 +303,10 @@ void failureDetector::handleInput() {
                 cout << it->first << "   " << inet_ntoa(ipAddr) << endl;
             }
         } else if (input.compare("leave") == 0) {
-            char sendBuf[MAXDATASIZE];
-            strcpy(sendBuf, "LEAV");
-            int node, size = 4;
-            uint64_t sentBirthTime = htonll(myBirthTime);
-            memcpy(sendBuf+size, &sentBirthTime, sizeof(sentBirthTime));
-            size += sizeof(sentBirthTime);
-                      
-            for (auto it=list.begin(); it !=list.end(); ++it) {
-                if (it->first != myBirthTime) {
-                    node = getNodeNumber(it->second);
-                    sendto(sockFd, sendBuf, size, 0, (struct sockaddr*)&nodeAddrs[node], sizeof(nodeAddrs[node]));
-                }
-            }
+            leave();
             log (INFO) << "Leaving the system.";
             exit(1);
-         
+
         } else {
             cout << "Wrong input: valid inputs are\n"
                  << "[list] to show current membership list\n"
@@ -302,16 +323,16 @@ void failureDetector::createSocket() {
         perror("socket");
         exit(7);
     }
-    log(INFO) << "Socket created."; 
-    string myName = "fa16-cs425-g27-";
+    log(INFO) << "Socket created.";
+    string myName = VMPREFIX;
     if (myNumber < 10) {
         myName += "0";
         myName += to_string(myNumber);
     } else {
-        myName += to_string(myNumber); 
+        myName += to_string(myNumber);
     }
     myName += ".cs.illinois.edu";
-    
+
     struct sockaddr_in bindAddr;
     memset(&bindAddr, 0, sizeof(bindAddr));
     bindAddr.sin_family = AF_INET;
@@ -322,7 +343,7 @@ void failureDetector::createSocket() {
     tmp.s_addr = htonl(myIP);
     auto myIPStr = inet_ntoa(tmp);
     inet_pton(AF_INET, myIPStr, &bindAddr.sin_addr);
-    
+
     // allow address reuse
     int YES = 1;
     setsockopt(sockFd, SOL_SOCKET, SO_REUSEADDR, &YES, sizeof(int));
@@ -339,19 +360,19 @@ void failureDetector::createSocket() {
 
 void failureDetector::fillAddrs() {
     for(int i = 1; i <= NODES; i++) {
-        string hostName = "fa16-cs425-g27-";
+        string hostName = VMPREFIX;
         if (i < 10) {
             hostName += "0";
             hostName += to_string(i);
         } else {
-            hostName += to_string(i); 
+            hostName += to_string(i);
         }
         hostName += ".cs.illinois.edu";
         memset(&nodeAddrs[i], 0, sizeof(nodeAddrs[i]));
         nodeAddrs[i].sin_family = AF_INET;
         nodeAddrs[i].sin_port = htons(PORT);
         IPAddrs[i] = getIP(hostName);
-        
+
         struct in_addr tmp;
         tmp.s_addr = htonl(IPAddrs[i]);
         auto IP = inet_ntoa(tmp);
@@ -422,15 +443,18 @@ void failureDetector::sendIndirectPINGS(int target) {
             if (it != list.end()) {
                 auto birthTime = it->first;
                 log(INFO) << birthTime << " has failed.";
+
+                updateSdfs(getNodeNumber(list[birthTime])); // tell sdfs of node failure
+
                 list.erase(birthTime);
                 log(INFO) << birthTime << " has been erased from the list.";
             }
         }
         return;
     }
-    // if there are more than one other node, ask them to ping target 
+    // if there are more than one other node, ask them to ping target
     strcpy(sendBuf, "PINR");
-    
+
     int sentTarget = htonl(target);
     memcpy(sendBuf+size, &sentTarget, sizeof(sentTarget));
     size += sizeof(sentTarget);
@@ -438,7 +462,7 @@ void failureDetector::sendIndirectPINGS(int target) {
     int sentMy = htonl(myNumber);
     memcpy(sendBuf+size, &sentMy, sizeof(sentMy));
     size += sizeof(sentMy);
-    
+
     int node;
     for (int i=0; i<end; ++i) {
         do {
@@ -458,6 +482,9 @@ void failureDetector::sendIndirectPINGS(int target) {
         if (it != list.end()) {
             auto birthTime = it->first;
             log(INFO) << birthTime << " has failed.";
+
+            updateSdfs(getNodeNumber(list[birthTime])); // tell sdfs of node failure
+
             list.erase(birthTime);
             log(INFO) << birthTime << " has been erased from the list.";
 
@@ -511,7 +538,7 @@ int failureDetector::getNodeNumber(uint32_t IP) {
 uint32_t failureDetector::getIP(const string &hostname) {
     struct hostent *he;
     struct in_addr **addr_list;
-                             
+
     if ( !(he = gethostbyname( hostname.c_str() ) )) {
         // get the host info
         log(ERROR) << "Could not get IP from hostname";
@@ -527,4 +554,31 @@ uint32_t failureDetector::getIP(const string &hostname) {
     return 0;
 }
 
+void failureDetector::leave() {
+    char sendBuf[MAXDATASIZE];
+    strcpy(sendBuf, "LEAV");
+    int node, size = 4;
+    uint64_t sentBirthTime = htonll(myBirthTime);
+    memcpy(sendBuf+size, &sentBirthTime, sizeof(sentBirthTime));
+    size += sizeof(sentBirthTime);
 
+    for (auto it=list.begin(); it !=list.end(); ++it) {
+        if (it->first != myBirthTime) {
+            node = getNodeNumber(it->second);
+            sendto(sockFd, sendBuf, size, 0, (struct sockaddr*)&nodeAddrs[node], sizeof(nodeAddrs[node]));
+        }
+    }
+}
+
+uint64_t failureDetector::getBirthTime() {
+    return  myBirthTime;
+}
+
+void failureDetector::printList() {
+    struct in_addr ipAddr;
+    cout << "        ID             " << "IP\n";
+    for (auto it=list.begin(); it!=list.end(); ++it) {
+        ipAddr.s_addr = htonl(it->second);
+        cout << it->first << "   " << inet_ntoa(ipAddr) << endl;
+    }
+}

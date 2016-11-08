@@ -39,6 +39,8 @@ constexpr int NODES = 10;   // potential number of nodes in the system
 constexpr int K = 3;        // number of nodes to ask for ping, see SWIM protocol paper
 
 
+class sdfs;     // forward declaration
+
 /*
  * This class detects failures of nodes in the system and keeps membership list updated
  * at all nodes. 
@@ -59,7 +61,7 @@ public:
  * @param logFile name of the log the file.
  * @param number node number to get hostname.
  */        
-failureDetector(int number, string logFile, level sLevel);
+failureDetector(int number, string logFile, level sLevel, sdfs* fs);
 
 /*
  * This function is run in the main thread and is responsible for receiving and processing 
@@ -80,6 +82,37 @@ void sendPING();
  */
 void handleInput();
 
+/*
+ * send JOIN message to a node in the system to join the system.
+ * @param otherNode node number to send join message.
+ */
+void sendJOIN(int otherNode);
+
+/*
+ * Leave the system.
+ *
+ */
+void leave();
+
+/*
+ * get the birthTime of this node
+ *
+ */
+uint64_t getBirthTime();
+
+/*
+ * print membership list
+ *
+ */
+void printList();
+
+/*
+ * IPAddrs of all the potential nodes in the system
+ *
+ */
+array<uint32_t, NODES+1> IPAddrs;
+
+
 private:
 /*
  * Create a UDP socket and bind it.
@@ -96,17 +129,12 @@ void createSocket();
 void fillAddrs();
 
 /*
- * send JOIN message to a node in the system to join the system.
- * @param otherNode node number to send join message.
- */
-void sendJOIN(int otherNode);
-
-/*
  * If a node does not send a direct ack (ACKD) in response to a ping message after timeout,
  * then request K other nodes to send pings to this node and reply if they receive an ack.
  * @param target number of node to send pings to.
  *
  */
+
 void sendIndirectPINGS(int target);
 
 /*
@@ -142,6 +170,18 @@ int getNodeNumber(uint32_t IP);
 uint32_t getIP(const string &hostname);
 
 /*
+ * update sdfs of fialure of a node
+ *
+ */
+void updateSdfs(int node);
+
+/*
+ * update sdfs of fialure of a node
+ *
+ */
+void updateFileSystem(int node);
+
+/*
  * addresses of other nodes
  *
  */
@@ -164,12 +204,6 @@ uint32_t myIP;
  *
  */
 int myNumber;
-
-/*
- * IPAddrs of all the potential nodes in the system
- *
- */
-array<uint32_t, NODES+1> IPAddrs;
 
 /*
  * socket file descriptor
@@ -200,6 +234,12 @@ map<uint64_t, uint32_t> list;
  *
  */
 logger log;
+
+/*
+ * instance of sdfs
+ *
+ */
+sdfs* fileSystem;
 
 };
 
