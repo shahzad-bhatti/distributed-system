@@ -10,10 +10,10 @@
 
 const string VMPREFIX = "fa16-cs425-g27-";
 
-failureDetector::failureDetector(int number, string logFile, level sLevel, sdfs* fs)
-: myNumber{number}, log{logFile} {
 
-    log.setLevel(sLevel);
+failureDetector::failureDetector(int number, logger &logg, sdfs* fs)
+: myNumber{number}, log(logg) {
+
     myBirthTime = timeNow();
     log(INFO) << "My VM Number is " << myNumber;
     log(INFO) << "My ID " << myBirthTime;
@@ -31,8 +31,8 @@ failureDetector::failureDetector(int number, string logFile, level sLevel, sdfs*
 
     thread recvMessagesThread(&failureDetector::recvMessages, this);
     recvMessagesThread.detach();  // let this run on its own
-
 }
+
 
 void failureDetector::recvMessages() {
     char recvBuf[MAXDATASIZE], sendBuf[MAXDATASIZE];
@@ -45,9 +45,7 @@ void failureDetector::recvMessages() {
         recvBuf[numBytes] = '\0';
         senderNode = getNodeNumber(ntohl(theirAddr.sin_addr.s_addr));
 
-
         if (strncmp(recvBuf, "JOIN", 4) == 0) { // a new node sends JOIN message
-
             offset = 4;
             uint64_t theirBirthTime;
             memcpy(&theirBirthTime, recvBuf+offset, sizeof(theirBirthTime));
@@ -188,6 +186,7 @@ void failureDetector::recvMessages() {
                     sendto(sockFd, recvBuf, numBytes, 0, (struct sockaddr*)&nodeAddrs[node], sizeof(nodeAddrs[node]));
                 }
             }
+
         } else if(strncmp(recvBuf, "PING", 4) == 0) {
             log(DEBUG2) << "Received PING message";
             strcpy(recvBuf, "ACKD");
@@ -247,14 +246,40 @@ void failureDetector::recvMessages() {
     }
 }
 
+
 void failureDetector::updateFileSystem(int node) {
     fileSystem->nodeFailure(node); // tell sdfs of node failure
-    
+    updateMapleJuice(node);
 }
+
 
 void failureDetector::updateSdfs(int node) {
     thread updateSdfsThread(&failureDetector::updateFileSystem, this, node);
     updateSdfsThread.detach();  // let this run on its own
+}
+
+
+void failureDetector::updateMapleJuice(int node) {
+    //MJ: tells MJ one node failed
+    int connToServer;
+    int status = connectToServer(myNumber, &connToServer);
+    if(status) {
+        cout <<"failureDetector cannot connect to MJ " << endl;
+
+    } else {
+        char message[20];
+        
+        strcpy(message, "FAMJ");
+        int offset = 4;
+
+        int failNode = htonl(node); 
+        memcpy(message+offset, &failNode, sizeof(failNode));
+        offset += sizeof(failNode);
+
+        write(connToServer, message, offset);
+        cout << "failureDetector informed MJfailure of " << node <<endl;
+        close(connToServer);
+    }
 }
 
 
@@ -276,12 +301,12 @@ void failureDetector::sendJOIN(int otherNode) {
         log(DEBUG2) << "JOIN message sent";
 
         nanosleep(&sleepFor, 0);
-
         if (joinReply) {
             break;
         }
     }
 }
+
 
 void failureDetector::handleInput() {
     string input;
@@ -316,6 +341,7 @@ void failureDetector::handleInput() {
         }
     }
 }
+
 
 void failureDetector::createSocket() {
     //socket() and bind() our socket. We will do all sendto()ing and recvfrom()ing on this one.
@@ -358,6 +384,7 @@ void failureDetector::createSocket() {
     log(INFO) << "My IP address " << myIPStr << " ("<< myIP << ")";
 }
 
+
 void failureDetector::fillAddrs() {
     for(int i = 1; i <= NODES; i++) {
         string hostName = VMPREFIX;
@@ -380,6 +407,7 @@ void failureDetector::fillAddrs() {
         inet_pton(AF_INET, IP, &nodeAddrs[i].sin_addr);
     }
 }
+
 
 void failureDetector::sendPING() {
     char sendBuf[MAXDATASIZE];
@@ -414,6 +442,7 @@ void failureDetector::sendPING() {
         }
     }
 }
+
 
 void failureDetector::sendIndirectPINGS(int target) {
     struct timespec sleepFor;
@@ -504,6 +533,7 @@ void failureDetector::sendIndirectPINGS(int target) {
     }
 }
 
+
 void failureDetector::copyMyID(char* buf, int &size) {
     uint64_t copiedBirthTime = htonll(myBirthTime);
     memcpy(buf+size, &copiedBirthTime, sizeof(copiedBirthTime));
@@ -513,6 +543,7 @@ void failureDetector::copyMyID(char* buf, int &size) {
     memcpy(buf+size, &copiedIP, sizeof(copiedIP));
     size += sizeof(copiedIP);
 }
+
 
 int failureDetector::getRandomNode() {
     int r;
@@ -527,6 +558,7 @@ int failureDetector::getRandomNode() {
     return node;
 }
 
+
 int failureDetector::getNodeNumber(uint32_t IP) {
     for(int i=1; i<=NODES; ++i) {
         if (IPAddrs[i]==IP)
@@ -534,6 +566,7 @@ int failureDetector::getNodeNumber(uint32_t IP) {
     }
     return 0;
 }
+
 
 uint32_t failureDetector::getIP(const string &hostname) {
     struct hostent *he;
@@ -544,7 +577,6 @@ uint32_t failureDetector::getIP(const string &hostname) {
         log(ERROR) << "Could not get IP from hostname";
         exit(8);
     }
-
     addr_list = (struct in_addr **) he->h_addr_list;
     for(int i = 0; addr_list[i] != nullptr; ++i) {
         // Return the first one;
@@ -553,6 +585,7 @@ uint32_t failureDetector::getIP(const string &hostname) {
     log(ERROR) << "Could not get IP from hostname";
     return 0;
 }
+
 
 void failureDetector::leave() {
     char sendBuf[MAXDATASIZE];
@@ -570,9 +603,11 @@ void failureDetector::leave() {
     }
 }
 
+
 uint64_t failureDetector::getBirthTime() {
     return  myBirthTime;
 }
+
 
 void failureDetector::printList() {
     struct in_addr ipAddr;
@@ -582,3 +617,48 @@ void failureDetector::printList() {
         cout << it->first << "   " << inet_ntoa(ipAddr) << endl;
     }
 }
+
+
+int failureDetector::connectToServer(int targetNode, int *connectionFd) {
+    struct in_addr tmp;
+    tmp.s_addr = htonl(IPAddrs[targetNode]);
+    auto IP = inet_ntoa(tmp);
+
+    //create client skt
+    *connectionFd = socket(AF_INET, SOCK_STREAM, 0);
+
+    // allow address reuse
+    int YES = 1;
+    setsockopt(sockFd, SOL_SOCKET, SO_REUSEADDR, &YES, sizeof(int));
+
+    // open socket
+    if(*connectionFd < 0) {
+        cout << "Cannot open socket" << endl;
+        exit(1);
+    }
+
+    //Variables Declaration
+    struct addrinfo hints, * res;
+    int status;
+
+    //clear hints
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
+    auto portStr = to_string(PORT3);
+    status = getaddrinfo(IP, portStr.c_str(), &hints, &res);
+    if (status != 0) {
+        fprintf(stderr, "[FailureDetector::connectToServer] Error getaddrinfo\n");
+        exit(1);
+    }
+
+    status = connect(*connectionFd, res->ai_addr, res->ai_addrlen);
+    if (status < 0) {
+        cout << "[FailureDetector::connectToServer] Cannot connect to: " << targetNode << endl;
+        cout.flush();
+        return -1;
+    }
+    return 0;
+}
+

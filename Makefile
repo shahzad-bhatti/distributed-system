@@ -16,7 +16,7 @@ LDFLAGS += -fsanitize=$(SANITIZE)
 endif
 
 EXENAME = query-log send-log node
-OBJECTS = log_querier.o log_sender.o logger.o failure_detector.o sdfs.o util.o node.o
+OBJECTS = log_querier.o log_sender.o logger.o failure_detector.o sdfs.o mapleJuice.o util.o node.o
 
 all : $(EXENAME)
 
@@ -32,12 +32,15 @@ log_querier.o : grep/log_querier.cc
 log_sender.o : grep/log_sender.cc
 	$(CXX) $(CXXFLAGS)  grep/log_sender.cc
 
-node : node.o logger.o failure_detector.o sdfs.o
-	$(CXX) node.o logger.o failure_detector.o util.o sdfs.o $(LDFLAGS) -o node
+node : node.o logger.o failure_detector.o sdfs.o mapleJuice.o
+	$(CXX) node.o logger.o failure_detector.o util.o sdfs.o mapleJuice.o $(LDFLAGS) -o node
 
-node.o : node.cc logger.o failure_detector.o sdfs.o
+node.o : node.cc logger.o failure_detector.o sdfs.o mapleJuice.o
 	$(CXX) node.cc $(CXXFLAGS)
    
+mapleJuice.o : mapleJuice/mapleJuice.cc logger.o util.o failure_detector.o sdfs.o
+	$(CXX) $(CXXFLAGS) mapleJuice/mapleJuice.cc
+
 failure_detector.o : failure_detector/failure_detector.cc logger.o util.o sdfs.o
 	$(CXX) $(CXXFLAGS) failure_detector/failure_detector.cc
 

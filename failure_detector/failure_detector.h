@@ -37,13 +37,13 @@ constexpr int MAXDATASIZE = 5000;
 constexpr uint16_t PORT = 7777;
 constexpr int NODES = 10;   // potential number of nodes in the system
 constexpr int K = 3;        // number of nodes to ask for ping, see SWIM protocol paper
-
+constexpr uint16_t PORT3 = 5555;
 
 class sdfs;     // forward declaration
 
 /*
  * This class detects failures of nodes in the system and keeps membership list updated
- * at all nodes. 
+ * at all nodes.
  * It can accept following command from the command line,
  * list - to show current list of nodes in the system,
  * id - birthtime of the node, which is used to uniquely identify a node.
@@ -60,13 +60,13 @@ public:
  * constructor for failureDetector object.
  * @param logFile name of the log the file.
  * @param number node number to get hostname.
- */        
-failureDetector(int number, string logFile, level sLevel, sdfs* fs);
+ */
+failureDetector(int number, logger &logg, sdfs* fs);
 
 /*
- * This function is run in the main thread and is responsible for receiving and processing 
+ * This function is run in the main thread and is responsible for receiving and processing
  * all the messages.
- */ 
+ */
 void recvMessages();
 
 /*
@@ -112,12 +112,18 @@ void printList();
  */
 array<uint32_t, NODES+1> IPAddrs;
 
+/*
+ * membership list containing birth time and IP addresses of alive nodes.
+ *
+ */
+map<uint64_t, uint32_t> list;
 
+void updateMapleJuice(int node);
 private:
 /*
  * Create a UDP socket and bind it.
  * All sending and receiving is done through this socket.
- * 
+ *
  */
 void createSocket();
 
@@ -188,6 +194,12 @@ void updateFileSystem(int node);
 struct sockaddr_in nodeAddrs[NODES+1];
 
 /*
+ * connect to server at targetNode
+ *
+ */
+int connectToServer(int targetNode, int *connectionFd);
+
+/*
  * birthTime of this node
  *
  */
@@ -223,17 +235,12 @@ bool joinReply = false;
  */
 array<bool, NODES+1> ackRecvd;
 
-/*
- * membership list containing birth time and IP addresses of alive nodes.
- *
- */
-map<uint64_t, uint32_t> list;
 
 /*
  * instance of logger class to write logs to the logFile
  *
  */
-logger log;
+logger& log;
 
 /*
  * instance of sdfs

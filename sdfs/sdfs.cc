@@ -4,22 +4,23 @@
  *
  */
 #include "sdfs.h"
-#include "../failure_detector/failure_detector.h"
-#include "../util/util.h"
 
 #include <functional>
 #include <iomanip>
 
-const string VMPREFIX = "fa16-cs425-g16-";
+const string VMPREFIX = "fa16-cs425-g27-";
 
-sdfs::sdfs(int number, string logFile, level sLevel)
-: myNumber{number}, log{logFile} {
+sdfs::sdfs(int number, logger &logg)
+: myNumber{number}, log(logg) {
 
-    fd = new failureDetector(number, logFile, sLevel, this);
+    fd = new failureDetector(number, logg, this);
     createSocket();
-    log.setLevel(sLevel); 
     fill(ring.begin(), ring.end(), false);
     ring[number] = true;
+    isAllFileNamesRecvd = false;
+    isAllJuiceFilesRecvd = false;
+    thread recvMessagesThread(&sdfs::recvMessages, this);
+    recvMessagesThread.detach();  // let this run on its own
 }
 
 void sdfs::recvMessages() {
@@ -54,19 +55,7 @@ void sdfs::recvMessages() {
 
             auto fileName = recvFile(recvBuf, newConnFd, numBytes, offset);
 
-            if (label == 'A') {
-                files.insert(pair<string,char>(fileName, 'A'));
-                sendFileToSuccessor(fileName, 'B');
-                log(INFO) << "Sending " << fileName << " to successor with label B";
-
-            } else if (label == 'B') {
-                files.insert(pair<string,char>(fileName, 'B'));
-                sendFileToSuccessor(fileName, 'C');
-                log(INFO) << "Sending " << fileName << " to successor with label C";
-
-            } else {
-                files.insert(pair<string,char>(fileName, 'C'));
-            }
+            files.insert(pair<string,char>(fileName, label));
 
         } else if(strncmp(recvBuf, "GET", 3) == 0) { // Get a file
             log(INFO) << "received a request to send a file" << endl;
@@ -128,7 +117,7 @@ void sdfs::recvMessages() {
 
         } else if(strncmp(recvBuf, "NFIL", 4) == 0) { // FILE does not exist in response to GETT
             offset = 4;
-            
+
             int fileNameSize;
             memcpy(&fileNameSize, recvBuf+offset, sizeof(fileNameSize));
             offset += sizeof(fileNameSize);
@@ -139,16 +128,14 @@ void sdfs::recvMessages() {
             offset += fileNameSize;
             fileName[fileNameSize] = '\0';
 
-            cout << fileName << " does not exist." << endl;
-
         } else if(strncmp(recvBuf, "UPDA", 4) == 0) { // FILE does not exist in response to GETT
             offset = 4;
-            
+
             char label = recvBuf[4];
             offset++;
 
             log(INFO) << "Update " << label << " message received";
-            
+
             int fileCount;
             memcpy(&fileCount, recvBuf+offset, sizeof(fileCount));
             offset += sizeof(fileCount);
@@ -161,10 +148,10 @@ void sdfs::recvMessages() {
                 memcpy(&fileNameLen, recvBuf+offset, sizeof(fileNameLen));
                 offset += sizeof(fileNameLen);
                 fileNameLen = ntohl(fileNameLen);
-                
+
                 string fileName(recvBuf+offset, fileNameLen);
                 offset += fileNameLen;
-                
+
                 log(DEBUG) << "fileName " << fileName;
 
                 auto it = files.find(fileName);
@@ -175,25 +162,25 @@ void sdfs::recvMessages() {
                     sendGetMessage(myNumber, senderNode, fileName, fileName, 'A');
                 }
             }
-       
+
         } else if(strncmp(recvBuf, "QURY", 4) == 0) { // check if this file exits
             offset = 4;
             log(INFO) << "received QURY message";
-            
+
             int requestNode;
             memcpy(&requestNode, recvBuf+offset, sizeof(requestNode));
             offset += sizeof(requestNode);
             requestNode = ntohl(requestNode);
 
             log(DEBUG) << "request Node " << requestNode;
-            
+
             int fileNameLen;
             memcpy(&fileNameLen, recvBuf+offset, sizeof(fileNameLen));
             offset += sizeof(fileNameLen);
             fileNameLen = ntohl(fileNameLen);
 
             string fileName(recvBuf+offset, fileNameLen);
-            
+
             log(DEBUG) << "fileName " << fileName;
 
             auto it = files.find(fileName);
@@ -206,26 +193,440 @@ void sdfs::recvMessages() {
 
         } else if(strncmp(recvBuf, "EXST", 4) == 0) { // reply for Query message if file exists
             offset = 4;
-            
+
             char label = recvBuf[offset];
-            
+
             struct in_addr tmp;
             tmp.s_addr = htonl(fd->IPAddrs[senderNode]);
             auto IP = inet_ntoa(tmp);
             cout << IP << "      " << label << endl;
-                        
-        
+
+
+        } else if(strncmp(recvBuf, "GEF", 3) == 0) { // request to get filenames given a prefix
+            offset = 3;
+
+            int sdfsPrefixLen;
+            memcpy(&sdfsPrefixLen, recvBuf+offset, sizeof(sdfsPrefixLen));
+            offset += sizeof(sdfsPrefixLen);
+            sdfsPrefixLen = ntohl(sdfsPrefixLen);
+            string dirPrefix(recvBuf+offset, sdfsPrefixLen);
+
+            log() << "sdfs/ received GEF message from " << senderNode << " for " << dirPrefix;
+
+            sendFileNames(dirPrefix, senderNode);
+
+        } else if(strncmp(recvBuf, "FNAM", 4) == 0) { // response to GEF
+            log() << "sdfs/ received FNAM message from " << senderNode;
+            offset = 4;
+            recvFileNames(recvBuf+4, senderNode);
+
+        } else if(strncmp(recvBuf, "JSND", 4) == 0) { // request to send juice input files
+            log() << "sdfs/ received a request to send juice input files";
+
+            handleSendJuiceInputFiles(recvBuf+4);
+
+        } else if(strncmp(recvBuf, "JFIL", 4) == 0) { // receive juice input file
+            log(INFO) << "received a juice file from " << senderNode;
+            offset = 4;
+            recvJuiceFile(recvBuf, newConnFd, numBytes, offset);
+
+        } else if(strncmp(recvBuf, "JSNT", 4) == 0) { // sent all juice input files
+            log(INFO) << "received all juices file sent " << senderNode;
+            handleAllJuiceFilesSent(senderNode);
+
+        } else if(strncmp(recvBuf, "DELI", 4) == 0) { // delete intermediate files
+            log(INFO) << "received delete intermediate files message from " << senderNode;
+            handleDeleteIntermediateFiles(recvBuf+4);
+
         } else { // unrecongnized message
-            log(ERROR) << "Unkown message: " << recvBuf;
+            log(ERROR) << "sdfs/ Unkown message: " << recvBuf;
             exit(2);
         }
         close(newConnFd);
-
     }
 }
 
-string sdfs::recvFile(char * recvBuf, int connFd, int numBytes, int offset) {
+void sdfs::handleDeleteIntermediateFiles(char * buf) {
+    int offset = 0;
 
+    int prefixLen;
+    memcpy(&prefixLen, buf+offset, sizeof(prefixLen));
+    offset += sizeof(prefixLen);
+    prefixLen = ntohl(prefixLen);
+    
+    string prefix(buf+offset, prefixLen);
+    thread deleteIntermediateFilesThread(&sdfs::deleteIntermediateFiles, this, prefix);
+    deleteIntermediateFilesThread.detach();  // let this run on its own
+
+}
+
+void sdfs::deleteIntermediateFiles(string prefix) {
+    cout << "deleteing Intermediate Files\n";
+    log() << "deleteing Intermediate Files\n";
+    
+    string sysCmd = "rm -f ";
+    for (auto it=files.begin(); it!=files.end(); it++ ){
+        if(isPrefix(prefix, it->first) ) {
+            string cmd = sysCmd + it->first;
+            system(cmd.c_str());
+            files.erase(it);
+        }
+    }
+    cout << "all intermediate files deleted\n";
+    log() << "sdfs/ all intermediate files deleted";
+}
+
+void sdfs::handleAllJuiceFilesSent(int node) {
+    juiceFilesNotifications.erase(node);
+
+    if (juiceFilesNotifications.empty()) {
+        lock_guard<mutex> lk(cvJuiceFilesMutex);
+        isAllJuiceFilesRecvd = true;
+        cout << "Notifying One for juice Files" << endl;
+        log() << "sdfs/ Notify other thread that all juice Files have been received";
+        cvJuiceFiles.notify_one();
+    }
+}
+
+void sdfs::sendDeleteIntermediateFiles(string prefix) {
+    char message[50];
+    strcpy(message, "DELI");
+    int offset = 4;
+
+    int prefixLen = prefix.size();
+    prefixLen = htonl(prefixLen);
+
+    memcpy(message+offset, &prefixLen, sizeof(prefixLen));
+    offset += sizeof(prefixLen);
+
+    memcpy(message+offset, &prefix[0], prefix.size());
+    offset += prefix.size();
+
+    for (int node=1; node < NODES+1; node++) {
+        if (ring[node]) {
+            int connToServer;
+            int status = connectToServer(node, &connToServer);
+            if(status) {
+                cout <<"deleteIntermediateFiles: Cannot connect to "<< node << endl;
+
+            } else {
+                write(connToServer, message, offset);
+                close(connToServer);
+            }
+        }
+    }
+}
+
+
+void sdfs::handleSendJuiceInputFiles(char* buf) {
+    int offset = 0;
+
+    int prefixLen;
+    memcpy(&prefixLen, buf+offset, sizeof(prefixLen));
+    prefixLen = ntohl(prefixLen);
+    offset += sizeof(prefixLen);
+
+    string prefix(buf+offset, prefixLen);
+    offset += prefixLen;
+
+    int countJuices;
+    memcpy(&countJuices, buf+offset, sizeof(countJuices));
+    countJuices = ntohl(countJuices);
+    offset += sizeof(countJuices);
+
+    int numJuices;
+    memcpy(&numJuices, buf+offset, sizeof(numJuices));
+    numJuices = ntohl(numJuices);
+    offset += sizeof(numJuices);
+
+    unordered_map<int, int> juiceIDs;
+    for (int i = 0; i < numJuices; i++) {
+        int juicerID;
+        memcpy(&juicerID, buf+offset, sizeof(juicerID));
+        juicerID = ntohl(juicerID);
+        offset += sizeof(juicerID);
+
+        int juicer;
+        memcpy(&juicer, buf+offset, sizeof(juicer));
+        juicer = ntohl(juicer);
+        offset += sizeof(juicer);
+
+        juiceIDs[juicerID] = juicer;
+    }
+    thread sendJuiceInputFilesThread(&sdfs::sendJuiceInputFiles, this, prefix, countJuices, juiceIDs);
+    sendJuiceInputFilesThread.detach();  // let this run on its own
+}
+
+void sdfs::sendJuiceInputFiles(string prefix, int countJuices, unordered_map<int, int> juiceIDs) {
+    int juicerID;
+    log() << "sdfs/ sending Juice input files";
+    cout << "sending Juice input files" << endl;
+
+    for (auto it = files.begin(); it != files.end(); it++) {
+        if(it->second == 'A' && isPrefix(prefix, it->first) ) {
+            auto key = getKey(it->first);
+            if (key.size() == 0) {
+                continue;
+            }
+            juicerID =  hash<string>{}(key) % countJuices;
+            auto it1 = juiceIDs.find(juicerID);
+
+            if (it1 != juiceIDs.end()) {
+                pushFileToNode(it1->second, it->first, prefix+"_"+key, "JFIL");
+            }
+        }
+    }
+    char message[10];
+    strcpy(message, "JSNT");
+    int offset = 4;
+    for (auto it = juiceIDs.begin(); it != juiceIDs.end(); it++) {
+        int connToServer;
+        int status = connectToServer(it->second, &connToServer);
+        if(status) {
+            cout <<"sendJuiceInputFiles: Cannot connect to "<< it->second << endl;
+
+        } else {
+            write(connToServer, message, offset);
+            close(connToServer);
+        }
+    }
+    log() << "sdfs/ all juice input files sent";
+    cout << "all juice input files sent" << endl;
+}
+
+
+void sdfs::recvJuiceFile(char * recvBuf, int connFd, int numBytes, int offset) {
+    int fileNameSize;
+    memcpy(&fileNameSize, recvBuf+offset, sizeof(fileNameSize));
+    offset += sizeof(fileNameSize);
+    fileNameSize = ntohl(fileNameSize);
+
+    int length;
+    memcpy(&length, recvBuf+offset, sizeof(length));
+    offset += sizeof(length);
+    length = ntohl(length);
+
+    string fileName(recvBuf+offset, fileNameSize);
+    offset += fileNameSize;
+
+    if (fileName.size() == 0) {
+        return;
+    }
+
+    ofstream wFile(fileName, ios::binary | ios::app);
+    wFile.write(recvBuf + offset, numBytes - offset);
+
+    length -= (numBytes - offset);
+    while (length ) {
+        numBytes = read(connFd, recvBuf, MAXDATASIZE - 1);
+        recvBuf[numBytes] = '\0';
+        wFile.write(recvBuf, numBytes);
+        length -= numBytes;
+    }
+    juiceFiles.insert(fileName);
+    wFile.close();
+}
+
+
+void sdfs::recvFileNames(char* recvBuf, int senderNode) {
+    log() << "sdfs/ storing fileNames received from " << senderNode;
+    int count;
+    int offset = 0;
+    memcpy(&count, recvBuf, sizeof(count));
+    count = ntohl(count);
+    offset += sizeof(count);
+
+    int fileNameLen;
+    for (int i=0; i < count; i++) {
+        memcpy(&fileNameLen, recvBuf+offset, sizeof(fileNameLen));
+        offset += sizeof(fileNameLen);
+        fileNameLen = ntohl(fileNameLen);
+
+        fileNames.insert(string(recvBuf+offset, fileNameLen));
+        offset += fileNameLen;
+    }
+
+    log() << "sdfs/ " << count <<" fileName received from " << senderNode;
+
+    cout << count <<" fileName received from " << senderNode << endl;
+    fileNameRequestSent.erase(senderNode);
+
+    if (fileNameRequestSent.empty()) {
+        lock_guard<mutex> lk(cvMutex);
+        isAllFileNamesRecvd = true;
+        cout << "Notifying One" << endl;
+        cv.notify_one();
+    }
+}
+
+
+void sdfs::sendFileNames(string dirPrefix, int node) {
+    char message[MAXDATASIZE];
+    strcpy(message, "FNAM");
+    int offset = 4;
+
+    int count = 0;
+    offset += sizeof(count);
+    int fileNameLen;
+    int sentFileNameLen;
+    log() << "sdfs/ sending fileNames for " << dirPrefix;
+
+    for (auto it=files.begin(); it!=files.end(); it++ ){
+        if(it->second == 'A' && isPrefix(dirPrefix, it->first) ) {
+            fileNameLen = it->first.size();
+            sentFileNameLen = htonl(fileNameLen);
+            memcpy(message+offset, &sentFileNameLen, sizeof(sentFileNameLen));
+            offset += sizeof(sentFileNameLen);
+
+            memcpy(message+offset, &it->first[0], fileNameLen);
+            offset += fileNameLen;
+            count++;
+        }
+    }
+    log(DEBUG) << "sdfs/ total fileNames sending " << count;
+    count = htonl(count);
+    memcpy(message+4, &count, sizeof(count));
+
+    int connToServer;
+    int status = connectToServer(node, &connToServer);
+    if(status) {
+        cout <<"sendExistMessage: Cannot connect to "<< node << endl;
+
+    } else {
+        write(connToServer, message, offset);
+        close(connToServer);
+    }
+    log() << "fileNames sent for " << dirPrefix;
+}
+
+
+void sdfs::getFileNames(string dirPrefix) {
+    log() << "sdfs/ sending Get file names message for dir " << dirPrefix;
+    sendGetFileNamesMessage(dirPrefix);
+
+    unique_lock<mutex> lk(cvMutex);
+    log() << "sdfs/ waiting for fileNames for " << dirPrefix;
+    cout << "Waiting... \n";
+    cv.wait(lk, [this]{return isAllFileNamesRecvd;});
+}
+
+
+void sdfs::sendGetFileNamesMessage(string dirPrefix) {
+    isAllFileNamesRecvd = false;
+    int sdfsPrefixLen = dirPrefix.size();
+    int sentSdfsPrefixLen = htonl(sdfsPrefixLen);
+
+    char message[MAXDATASIZE];
+    strcpy(message, "GEF");
+    int offset = 3;
+
+    memcpy(message+offset, &sentSdfsPrefixLen, sizeof(sentSdfsPrefixLen));
+    offset += sizeof(sentSdfsPrefixLen);
+
+    memcpy(message+offset, &dirPrefix[0], sdfsPrefixLen);
+    offset += sdfsPrefixLen;
+
+    log(DEBUG) << "GEF" << " message Length " << offset;
+
+    for (int hostNode = 1; hostNode < ring.size(); hostNode++) {
+        if (ring[hostNode]) {
+            fileNameRequestSent.insert(hostNode);
+            int connToServer;
+            int status = connectToServer(hostNode, &connToServer);
+            if(status) {
+                cout <<"sendGetMessage: Cannot connect to "<< hostNode << endl;
+            } else {
+                log(DEBUG) << "sdfs/ sending Get file Names message to " << hostNode;
+                write(connToServer, message, offset);
+                close(connToServer);
+            }
+        }
+    }
+}
+
+
+void sdfs::fetchJuiceInputFiles() {
+    unique_lock<mutex> lk(cvJuiceFilesMutex);
+    log() << "sdfs/ waiting for juice files";
+    cout << "Waiting for juice input files... \n";
+    cvJuiceFiles.wait(lk, [this]{return isAllJuiceFilesRecvd;});
+    log() << "sdfs/ all juice files have been received.";
+    isAllJuiceFilesRecvd = false;
+}
+
+
+void sdfs::sendJuiceFilesToJuicers(string prefix, int countJuices, unordered_map<int, int> juiceIDs) {
+    char message[MAXDATASIZE];
+    strcpy(message, "JSND");
+    int offset = 4;
+
+    int prefixLen = prefix.size();
+    prefixLen = htonl(prefixLen);
+
+    memcpy(message+offset, &prefixLen, sizeof(prefixLen));
+    offset += sizeof(prefixLen);
+
+    memcpy(message+offset, &prefix[0], prefix.size());
+    offset += prefix.size();
+
+    countJuices = htonl(countJuices);
+    memcpy(message+offset, &countJuices, sizeof(countJuices));
+    offset += sizeof(countJuices);
+
+    int numJuices = juiceIDs.size();
+    numJuices = htonl(numJuices);
+
+    memcpy(message+offset, &numJuices, sizeof(numJuices));
+    offset += sizeof(numJuices);
+
+    for (auto it = juiceIDs.begin(); it != juiceIDs.end(); it++) {
+        int juicerID = htonl(it->first);
+        memcpy(message+offset, &juicerID, sizeof(juicerID));
+        offset += sizeof(juicerID);
+
+        int juicer = htonl(it->second);
+        memcpy(message+offset, &juicer, sizeof(juicer));
+        offset += sizeof(juicer);
+    }
+
+    for (int node = 1; node < NODES+1; node++) {
+        if(ring[node]) {
+            int connToServer;
+            int status = connectToServer(node, &connToServer);
+            if(status) {
+                cout <<"sendJuiceIputMessages: Cannot connect to "<< node << endl;
+            } else {
+                write(connToServer, message, offset);
+                close(connToServer);
+            }
+        }
+    }
+    log() << "sdfs/ Juice input request messages sent";
+    cout << "Juice input request messages sent" << endl;
+}
+
+
+void sdfs::recvMapleFiles() {
+    isAllMapleFilesRecvd = false;
+    {
+        lock_guard<mutex> lk(mapleFilesMutex);
+            for (auto it = mapleFiles.begin(); it !=mapleFiles.end(); it++) {
+            auto hostNode = location(*it);
+            if (hostNode == myNumber) {
+                recvdMapleFiles.insert(*it);
+                mapleFiles.erase(it);
+            }
+        }
+    }
+    unique_lock<mutex> lk(cvMapleFilesMutex);
+    log() << "sdfs/ waiting for mapleFiles";
+    cout << "Waiting for MapleFiles... \n";
+    cvMapleFiles.wait(lk, [this]{return isAllMapleFilesRecvd;});
+    log() << "sdfs/ all maple Files have been received.";
+}
+
+
+string sdfs::recvFile(char * recvBuf, int connFd, int numBytes, int offset) {
     int fileNameSize;
     memcpy(&fileNameSize, recvBuf+offset, sizeof(fileNameSize));
     offset += sizeof(fileNameSize);
@@ -249,7 +650,7 @@ string sdfs::recvFile(char * recvBuf, int connFd, int numBytes, int offset) {
     ofstream wFile(fileName, ios::binary | ios::trunc);
     wFile.write(recvBuf + offset, numBytes - offset);
 
-    length = length - (numBytes - offset);
+    length -= (numBytes - offset);
 
     while (length ) {
         numBytes = read(connFd, recvBuf, MAXDATASIZE - 1);
@@ -267,34 +668,53 @@ string sdfs::recvFile(char * recvBuf, int connFd, int numBytes, int offset) {
 
     wFile.close();
     log(INFO) << "stored file on local disk";
+
+    lock_guard<mutex> lk(mapleFilesMutex);
+    if (!mapleFiles.empty()) {
+        auto it = mapleFiles.find(fileName);
+        if (it != mapleFiles.end()) {
+            recvdMapleFiles.insert(fileName);
+            mapleFiles.erase(it);
+        }
+        if (mapleFiles.empty()) {
+            lock_guard<mutex> lk(cvMapleFilesMutex);
+            isAllMapleFilesRecvd = true;
+            cout << "Notifying One for Maple Files" << endl;
+            log() << "sdfs/ Notify other thread that all mapleFiles have been received";
+            cvMapleFiles.notify_one();
+
+        }
+    }
     return fileName;
 }
+
 
 void sdfs::sendExistMessage(int node, char label) {
     int connToServer;
     int status = connectToServer(node, &connToServer);
     if(status) {
         cout <<"sendExistMessage: Cannot connect to "<< node << endl;
-
     } else {
         char message[MAXDATASIZE];
         strcpy(message, "EXST");
         int offset = 4;
-        
+
         message[offset] = label;
         offset++;
- 
+
         write(connToServer, message, offset);
         close(connToServer);
     }
-    
 }
+
+
 void sdfs::sendFileToSuccessor(string fileName, char label) {
     auto node = successorNode(myNumber);
     string code("PUT");
     code += label;
     pushFileToNode(node, fileName, fileName, code);
 }
+
 
 void sdfs::sendFile(int requestNode, string localName, string sdfsName, char label) {
     auto it = files.find(localName);
@@ -330,20 +750,24 @@ void sdfs::sendFile(int requestNode, string localName, string sdfsName, char lab
     }
 }
 
+
 void sdfs::fetchFile(string sdfsName, string localName) {
     auto hostNode = location(sdfsName);
 
     log(INFO) << "fetching file " << sdfsName <<  ", hosting node " << hostNode;
     if (hostNode == myNumber) {
-        ifstream  src(sdfsName, ios::binary);
-        ofstream  dst(localName, ios::binary);
-        dst << src.rdbuf();
-        src.close();
-        dst.close();
+        if (sdfsName.compare(localName) != 0) {
+            ifstream  src(sdfsName, ios::binary);
+            ofstream  dst(localName, ios::binary);
+            dst << src.rdbuf();
+            src.close();
+            dst.close();
+        }
         return;
     }
     sendGetMessage(myNumber, hostNode, sdfsName, localName, 'A');
 }
+
 
 void sdfs::sendGetMessage(int requestNode, int hostNode, string sdfsName, string localName, char label) {
     int connToServer;
@@ -387,32 +811,98 @@ void sdfs::sendGetMessage(int requestNode, int hostNode, string sdfsName, string
     }
 }
 
-void sdfs::storeFile(string localName, string sdfsName) {
-    auto node = location(sdfsName);
 
+bool sdfs::storeFile(string localName, string sdfsName) {
+    auto node = location(sdfsName);
+    vector<int> nodes;
+    vector<string> messageTypes; 
     if (node == myNumber) {
-        ifstream  src(localName, ios::binary);
-        ofstream  dst(sdfsName, ios::binary);
-        dst << src.rdbuf();
-        src.close();
-        dst.close();
+        if (localName.compare(sdfsName) != 0) {
+            ifstream  src(localName, ios::binary);
+            ofstream  dst(sdfsName, ios::binary);
+            dst << src.rdbuf();
+            src.close();
+            dst.close();
+        }
         files.insert(pair<string, char>(sdfsName, 'A'));
-        pushFileToNode(successorNode(node), localName, sdfsName, "PUTB");
-        return;
+        
+        node = successorNode(node);     
+        nodes.push_back(node);          //B
+        node = successorNode(node);
+        nodes.push_back(node);          //C
+        
+        messageTypes.push_back("PUTB");
+        messageTypes.push_back("PUTC");
+        return pushFileToNodes(nodes, localName, sdfsName, messageTypes);
     }
-    pushFileToNode(node, localName, sdfsName, "PUTA");
+    if (successorNode(node) == myNumber) {
+        if (localName.compare(sdfsName) != 0) {
+            ifstream  src(localName, ios::binary);
+            ofstream  dst(sdfsName, ios::binary);
+            dst << src.rdbuf();
+            src.close();
+            dst.close();
+        }
+        files.insert(pair<string, char>(sdfsName, 'B'));
+        
+        nodes.push_back(node);                              //A
+        messageTypes.push_back("PUTA");
+
+        nodes.push_back(successorNode(myNumber));          //C
+        messageTypes.push_back("PUTC");
+
+        return pushFileToNodes(nodes, localName, sdfsName, messageTypes);
+    }
+
+    if (successorNode(successorNode(node)) == myNumber) {
+        if (localName.compare(sdfsName) != 0) {
+            ifstream  src(localName, ios::binary);
+            ofstream  dst(sdfsName, ios::binary);
+            dst << src.rdbuf();
+            src.close();
+            dst.close();
+        }
+        files.insert(pair<string, char>(sdfsName, 'C'));
+        
+        nodes.push_back(node);                          //A
+        messageTypes.push_back("PUTA");
+
+        nodes.push_back(successorNode(node));          //B
+        messageTypes.push_back("PUTB");
+
+        return pushFileToNodes(nodes, localName, sdfsName, messageTypes);
+        
+    }
+
+    nodes.push_back(node);          //A
+    node = successorNode(node);
+    nodes.push_back(node);          //B
+    node = successorNode(node);
+    nodes.push_back(node);          //C
+    
+    messageTypes.push_back("PUTA");
+    messageTypes.push_back("PUTB");
+    messageTypes.push_back("PUTC");
+    return pushFileToNodes(nodes, localName, sdfsName, messageTypes);
+ 
 }
+
 
 void sdfs::removeFile(string fileName) {
     auto it = files.find(fileName);
     if (it != files.end()) {
         auto label = it->second;
         files.erase(it);
+
+        string cmd = "rm -f " + fileName;
+        system(cmd.c_str());
+
         if (label != 'C') {
             sendDeleteMessage(successorNode(myNumber), fileName);
         }
     }
 }
+
 
 void sdfs::deleteFile(string fileName) {
     auto node = location(fileName);
@@ -423,6 +913,7 @@ void sdfs::deleteFile(string fileName) {
     }
     sendDeleteMessage(node, fileName);
 }
+
 
 void sdfs::sendDeleteMessage(int node, string fileName) {
     int connToServer;
@@ -447,16 +938,16 @@ void sdfs::sendDeleteMessage(int node, string fileName) {
 }
 
 
-
 void sdfs::newNode(int node) {
     ring[node] = true;
 }
+
 
 void sdfs::updateFileIds() {
     for (auto it = files.begin(); it != files.end(); ++it) {
         auto filename = it->first;
         auto node = location(filename);
-        
+
         if (myNumber == node) {
             files[filename] = 'A';
         }
@@ -465,7 +956,7 @@ void sdfs::updateFileIds() {
 
 
 int sdfs::createUpdaMsg(char* msg, vector<string>& filenames, char fileType) {
-    
+
     string msgType = "UPDA";
     msgType += fileType;
 
@@ -487,8 +978,9 @@ int sdfs::createUpdaMsg(char* msg, vector<string>& filenames, char fileType) {
         bufferlen += filename.size();
     }
     log(DEBUG) << "update buffer size " << bufferlen;
-    return bufferlen; 
+    return bufferlen;
 }
+
 
 void sdfs::requestUpdateMasteringFiles() {
     vector<string> masteringFiles;
@@ -509,7 +1001,7 @@ void sdfs::requestUpdateMasteringFiles() {
     for (char fileType = 'B'; fileType<='C'; ++fileType) {
         char msg[MAXDATASIZE2];
         auto offset = createUpdaMsg(msg, masteringFiles, fileType);
-        
+
         //send to appropriate node
         targetNode = successorNode(targetNode);
         if (targetNode == myNumber) {
@@ -527,27 +1019,30 @@ void sdfs::requestUpdateMasteringFiles() {
     }
 }
 
+
 void sdfs::updateFileDistribution() {
     lock_guard<mutex> lck (updateFileDistMutex);
     updateFileIds();
     requestUpdateMasteringFiles();
 }
 
+
 void sdfs::nodeFailure(int node) {
     if (!ring[node]) {
         return;
     }
 
-    if ( node == predecessorNode(myNumber) || 
-         node == successorNode(myNumber) || 
+    if ( node == predecessorNode(myNumber) ||
+         node == successorNode(myNumber) ||
          node == successorNode( successorNode(myNumber) ) ) {
-    
+
         ring[node] = false;
         log(INFO) << "node " << node << " fails, updated file ids." << endl;
         updateFileDistribution();
-    }   
+    }
     ring[node] = false;
 }
+
 
 void sdfs::showStore() {
     cout<<"=> showStore: \n";
@@ -559,6 +1054,7 @@ void sdfs::showStore() {
         cout << left << setw(charWidth) << setfill(separator) << it->second << endl;
     }
 }
+
 
 void sdfs::showFileLocations(string fileName){
     auto node = location(fileName);
@@ -579,6 +1075,7 @@ void sdfs::showFileLocations(string fileName){
     sendQueryMessage(myNumber, node, fileName);
 }
 
+
 void sdfs::sendQueryMessage(int requestNode, int hostNode, string fileName) {
     int connToServer;
     int status = connectToServer(hostNode, &connToServer);
@@ -593,7 +1090,7 @@ void sdfs::sendQueryMessage(int requestNode, int hostNode, string fileName) {
         requestNode = htonl(requestNode);
         memcpy(message+offset, &requestNode, sizeof(requestNode));
         offset += sizeof(requestNode);
-        
+
         int fileNameLen = htonl(fileName.size());
         memcpy(message+offset, &fileNameLen, sizeof(fileNameLen));
         offset += sizeof(fileNameLen);
@@ -672,6 +1169,7 @@ void sdfs::handleInput() {
     }
 }
 
+
 void sdfs::createSocket() {
 
     //socket() and bind() our socket. We will do all recv()ing on this socket.
@@ -700,7 +1198,6 @@ void sdfs::createSocket() {
 }
 
 
-
 int sdfs::getNodeNumber(uint32_t IP) {
     for(int i = 1; i <= NODES; ++i) {
         if (fd->IPAddrs[i]==IP)
@@ -708,6 +1205,7 @@ int sdfs::getNodeNumber(uint32_t IP) {
     }
     return 0;
 }
+
 
 int sdfs::connectToServer(int targetNode, int *connectionFd) {
 
@@ -752,6 +1250,7 @@ int sdfs::connectToServer(int targetNode, int *connectionFd) {
     }
     return 0;
 }
+
 
 bool sdfs::pushFileToNode(int targetNode, string localFile, string remoteFile, string code) {
     int connectionToServer;
@@ -815,6 +1314,76 @@ bool sdfs::pushFileToNode(int targetNode, string localFile, string remoteFile, s
     }
 }
 
+
+bool sdfs::pushFileToNodes(vector<int> nodes, string localFile, string remoteFile, vector<string> codes) {
+    std::ifstream file(localFile, ios::binary);
+
+    if (!file.good()) {
+        cout << "pushFileToNodes: Could not open file: " << localFile << endl;
+        return false;
+    }
+         
+    // Read the file, store in buffer
+    file.seekg (0, file.end);
+    int length = file.tellg();
+    file.seekg (0, file.beg);
+
+    int sentLength = htonl(length);
+    int fileNameSize = remoteFile.size();
+    int sentFileNameSize = htonl(fileNameSize);
+
+    // header: PUTA, sizeof(filename), sizeof(content), filename
+    char header[MAXDATASIZE];
+    int offset = 4;
+    string code = codes[0];
+    strcpy(header, code.data());
+
+    memcpy(header+offset, &sentFileNameSize, sizeof(sentFileNameSize));
+    offset += sizeof(sentFileNameSize);
+
+    memcpy(header+offset, &sentLength, sizeof(sentLength));
+    offset += sizeof(sentLength);
+
+    memcpy(header+offset, &remoteFile[0], fileNameSize);
+    offset += fileNameSize;
+
+    header[offset] = '\0';
+
+    char* message = new char[offset + length];
+
+    memcpy(message, header, offset);
+
+    file.read(&message[offset], length);
+
+    for (int i=0; i < nodes.size(); i++) {
+        code = codes[i];
+        strcpy(message, code.data());
+        int connectionToServer;
+        int ret = connectToServer(nodes[i], &connectionToServer);
+        if(ret!=0) {
+            cout <<"ERROR pushFileToNodes: Cannot connect to " << nodes[i] << endl;
+            file.close();
+            return false;
+
+        } else {
+
+            int ret = write(connectionToServer, message, offset + length);
+            if (ret !=0) {
+                close(connectionToServer);
+                file.close();
+                delete[] message;
+                return false;
+            }
+            close(connectionToServer);
+        }
+    
+    }           
+    file.close();
+    delete[] message;
+    return true;
+}
+
+
 void sdfs::printRing() {
     for (int i=1; i <= NODES; i++) {
         if (ring[i]) {
@@ -822,6 +1391,7 @@ void sdfs::printRing() {
         }
     }
 }
+
 
 int sdfs::location(const string &filename) {
     int node =  hash<string>{}(filename) % 10;
@@ -834,6 +1404,7 @@ int sdfs::location(const string &filename) {
     return node;
 }
 
+
 int sdfs::successorNode(int node) {
     int pos = 0;
     for (int i = node+1; ; ++i) {
@@ -843,6 +1414,8 @@ int sdfs::successorNode(int node) {
         }
     }
 }
+
+
 int sdfs::predecessorNode(int node) {
     int pos = node -1;
     while(1) {
@@ -855,3 +1428,4 @@ int sdfs::predecessorNode(int node) {
         --pos;
     }
 }
+
