@@ -5,11 +5,11 @@
  *
  */
 
+#include "mapleJuice/mapleJuice.h"
 #include "failure_detector/failure_detector.h"
 #include "sdfs/sdfs.h"
 #include "logger/logger.h"
-#include "sdfs/sdfs.h"
-// #include "push.cpp"
+
 
 #include <iostream>
 #include <string>
@@ -35,11 +35,13 @@ int main(int argc, char *argv[]) {
     }
     fileName += ".log";
 
-    sdfs fs(number, fileName, INFO);
+    logger log(fileName);
+    log.setLevel(INFO);
+    mapleJuice mj(number, log);
 
-    thread inputThread(&sdfs::handleInput, &fs);
+    thread inputThread(&mapleJuice::handleInput, &mj);
 
-    fs.recvMessages();
+    mj.recvMessages();
 
     return 0;
 }

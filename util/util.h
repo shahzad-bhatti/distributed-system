@@ -31,13 +31,6 @@ bool fileExists(const std::string& name);
  */
 unsigned hash_str(const char* s);
 
-/**
- * partition strings into two parts based on first occurrence of c
- */
-void partition_string(string str, char c, string& str1, string& str2);
-
-bool replace(std::string& str, const std::string& from, const std::string& to);
-
 /*
  * runs popen and returns result to a string
  *
@@ -46,17 +39,8 @@ string exec(const char* cmd);
 
 /*
  *
- * parse file name from map_5_apple to map_apple
- *
- */
-//string parseFileName(string fileName);
-
-/*
- *
  * get key from intermediat filename e.g apple from map_5_apple
  *
  */
 string getKey(string fileName);
-
-//string getKeyForJuice(string fileName);
 

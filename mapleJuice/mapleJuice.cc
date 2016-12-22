@@ -27,7 +27,7 @@ mapleJuice::mapleJuice(int number, logger & logg)
 
 void mapleJuice::recvMessages() {
     char recvBuf[MAXDATASIZE];
-    int numBytes, offset, senderNode;
+    int numBytes, senderNode;
     struct sockaddr_in theirAddr;
     socklen_t theirAddrLen = sizeof(theirAddr);
 
@@ -329,7 +329,7 @@ void mapleJuice::runMapleJob(maple m, int node) {
             string line;
             while(getline(iss, line)) {
                 string key;
-                for (int i=0; i<line.size() && line[i]!='\t' ; i++) {
+                for (size_t i=0; i<line.size() && line[i]!='\t'; i++) {
                     if (isalnum(line[i])) {
                         key += line[i];
                     }

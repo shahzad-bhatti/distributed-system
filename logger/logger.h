@@ -6,12 +6,14 @@
 #include <memory>
 #include <fstream>
 
+using namespace std;
+
 // log message levels
 enum level	{ DEBUG2, DEBUG, INFO, WARN, ERROR };
 class logger;
 
-class logstream : public std::ostringstream
-{
+
+class logstream : public ostringstream {
 public:
 	logstream(logger& oLogger, level nLevel);
 	logstream(const logstream& ls);
@@ -22,13 +24,13 @@ private:
 	level m_nLevel;
 };
 
-class logger
-{
+
+class logger {
 public:
-    logger(std::string filename);
+    logger(string filename);
 	virtual ~logger();
 
-	void log(level nLevel, std::string oMessage);
+	void log(level nLevel, string oMessage);
 
 	logstream operator()();
 	logstream operator()(level nLevel);
@@ -37,11 +39,9 @@ public:
 
 private:
 	const tm* getLocalTime();
-
-private:
-	std::mutex		m_oMutex;
-	std::ofstream	m_oFile;
+	mutex m_oMutex;
+	ofstream m_oFile;
     level sLevel;
-	tm				m_oLocalTime;
+	tm m_oLocalTime;
 };
 

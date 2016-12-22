@@ -528,7 +528,7 @@ void sdfs::sendGetFileNamesMessage(string dirPrefix) {
 
     log(DEBUG) << "GEF" << " message Length " << offset;
 
-    for (int hostNode = 1; hostNode < ring.size(); hostNode++) {
+    for (size_t hostNode = 1; hostNode < ring.size(); hostNode++) {
         if (ring[hostNode]) {
             fileNameRequestSent.insert(hostNode);
             int connToServer;
@@ -1355,7 +1355,7 @@ bool sdfs::pushFileToNodes(vector<int> nodes, string localFile, string remoteFil
 
     file.read(&message[offset], length);
 
-    for (int i=0; i < nodes.size(); i++) {
+    for (size_t i=0; i < nodes.size(); i++) {
         code = codes[i];
         strcpy(message, code.data());
         int connectionToServer;
