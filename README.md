@@ -1,5 +1,3 @@
-## Make ane Run the program
-
 This program can be used to create a simple distributed file system. It also detects failures of nodes in a distributed system and replicates the files appropriately. Every file is replicated on three different nodes. It guarantees completeness for upto two consective failures under the assumption that we have at three live nodes at all times.
 
 A mapReduce job can be run via any node. This node becomes master for the mapReduce task and assigns map task to other nodes. Once the map task is completed by all nodes, the master then assigns reduce task to other nodes. Map and reduce tasks can be issued via the following commands.
