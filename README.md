@@ -17,17 +17,17 @@ To make the program run "make"
 
 ## Interacting with the system
 * To join a node to the existing system, give the command ``join <vm number>`` where ``<vm number>`` is the number of a node already present in the distributed system.
-* To see the id of the node, give the command "id". id is the birthTime of a node in microsecond
-* To see current membership list, give command "list". list shows id and ip addresses of current nodes.
-* To make a node leave the system, give the command "leave". 
-* To put a file in the system, give the command put <local_filename> <sdfs_filename>"
-* To get a file from the system, give the command "get <sdfs_filename> <local_filename>"
-* To delete a file from the system, give the command "delete <sdfs_filename>"
-* To see the files store on a node, give the command "store"
-* To list the nodes replicating a file, give the command "ls <sdfs_filename>"
+* To see the id of the node, give the command ``id``. id is the birthTime of a node in microsecond
+* To see current membership list, give command ``list``. list shows IDs and IP addresses of current nodes
+* To make a node leave the system, give the command ``leave`` 
+* To put a file in the system, give the command ``put <local_filename> <sdfs_filename>``
+* To get a file from the system, give the command ``get <sdfs_filename> <local_filename>``
+* To delete a file from the system, give the command ``delete <sdfs_filename>``
+* To see the files store on a node, give the command ``store``
+* To list the nodes replicating a file, give the command ``ls <sdfs_filename>``
 
 ## Running distributed grep on log files
-* Run ./send-log on all the machine where log files are located.
-* On one of the machines run ./query-log <grep options> <grep string>.
+* Run ``./send-log`` on all the machine where log files are located.
+* On one of the machines run ``./query-log <grep options> <grep string>``.
 
 
