@@ -8,7 +8,7 @@
 #include "../util/util.h"
 #include "../sdfs/sdfs.h"
 
-const string VMPREFIX = "fa16-cs425-g27-";
+const string VMPREFIX ="shahzad-";
 
 
 failureDetector::failureDetector(int number, logger &logg, sdfs* fs)
