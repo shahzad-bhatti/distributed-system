@@ -10,7 +10,7 @@ The system also allows to grep on log files from different machines in the syste
 To make the program run "make"
 
 ## Run
-* run the program as ./node <vm number>. Note, vm number is needed to get the IP address. You would have to format machine names in failure_detector/failure_detector.{cc,h} and node.cc
+* run the program as ./node <vm number>. Note, vm number is needed to get the IP address. You would have to format machine names in failure_detector/failure_detector.cc, sdfs/sdfs.cc and mapleJuice/mapleJuice.cc.
 
 ## Interacting with the system
 * To join a node to the existing system, give the command "join <vm number>" where <vm number> is the number of a node already present in the distributed system.
