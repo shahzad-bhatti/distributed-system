@@ -14,7 +14,7 @@
 #include <cctype>
 #include <chrono>
 
-const string VMPREFIX = "fa16-cs425-g27-";
+const string VMPREFIX = "shahzad-";
 
 
 mapleJuice::mapleJuice(int number, logger & logg)
