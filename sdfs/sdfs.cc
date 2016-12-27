@@ -8,7 +8,7 @@
 #include <functional>
 #include <iomanip>
 
-const string VMPREFIX = "fa16-cs425-g27-";
+const string VMPREFIX = "shahzad-";
 
 sdfs::sdfs(int number, logger &logg)
 : myNumber{number}, log(logg) {
